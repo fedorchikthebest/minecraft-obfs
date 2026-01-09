@@ -1,8 +1,11 @@
 #include "events/callbacks.h"
-#include <ev.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
+#include <unistd.h>
+#include <string.h>
 
-int main() {
-	run_server(25567);
+int main(int argc, char *argv[]) {
+  char *slash = strrchr(argv[0], '/');
+  if (slash != NULL)
+    *slash = 0;
+  chdir(argv[0]);  
+  run_server(25565);  
 }  
