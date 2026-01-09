@@ -16,7 +16,7 @@
 #define READER_BUFFER_SIZE 2048
 #define AUTH_BUFFER_SIZE 512
 #define VERIFY_BEGIN 12
-#define CIPHER EVP_aes_256_cfb()
+#define CIPHER EVP_aes_256_cfb8()
 
 static ev_io serv;
 static size_t size;
@@ -27,12 +27,6 @@ static struct sockaddr_in6 proxy_addr6, minecraft_addr6;
 
 static unsigned char key[32];
 static unsigned char iv[16];
-
-typedef struct {
-  EVP_CIPHER_CTX *ctx;
-  ev_io *vports[256];
-} proxy_client;
-
 
 void fill_minecraft_addr(int af, char *addr, unsigned short int port) {
   if (af == AF_INET && inet_pton(af, addr, &minecraft_addr4.sin_addr) > 0) {
@@ -115,10 +109,8 @@ static void full_readdr(EV_P_ ev_io *w, int revents){
 static void minecraft_proxy_client(EV_P_ ev_io *w, int revents) {
   EVP_CIPHER_CTX *ctx;
   unsigned char buf[AUTH_BUFFER_SIZE] = {0}, verify_key[16];
-  struct sockaddr_in addr;
   int pos;
   ev_io *reciver = w->data;
-  proxy_client *pc;
   
   size = recv(w->fd, buf, AUTH_BUFFER_SIZE, 0);
   if (size <= 0) {
@@ -146,7 +138,7 @@ static void minecraft_proxy_client(EV_P_ ev_io *w, int revents) {
       if (connect(reciver->fd, proxy_addr, proxy_addr_size) < 0) {
         perror("FATAL: cant connect to proxy server\n");
         exit(1);
-      }      
+      }
       ev_io_init(w, full_readdr, w->fd, EV_READ);
     } else {
       ev_io_init(w,  full_readdr, w->fd, EV_READ);
