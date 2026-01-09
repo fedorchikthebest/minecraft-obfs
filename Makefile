@@ -1,2 +1,2 @@
 all:
-	clang ./main.c ./evenst/callbacks.c -lev -lssl -lcrypto -o build/minecraft-obfs
+	clang ./main.c ./events/callbacks.c -lev -lssl -lcrypto -o build/minecraft-obfs
