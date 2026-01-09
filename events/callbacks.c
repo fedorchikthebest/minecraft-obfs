@@ -9,18 +9,21 @@
 #include <stdlib.h>
 #include <openssl/evp.h>
 #include <string.h>
-#include <netdb.h>
+#include <arpa/inet.h>
 
 #define CONTINUE_BIT 0x80
 #define SEGMENT_BITS 0x7F
 #define READER_BUFFER_SIZE 2048
 #define AUTH_BUFFER_SIZE 512
 #define VERIFY_BEGIN 12
-#define PROXY_BUFFER_SIZE 4096
 #define CIPHER EVP_aes_256_cfb()
 
 static ev_io serv;
 static size_t size;
+unsigned int proxy_addr_size, minecraft_addr_size;
+static struct sockaddr *proxy_addr, *minecraft_addr;
+static struct sockaddr_in proxy_addr4, minecraft_addr4;
+static struct sockaddr_in6 proxy_addr6, minecraft_addr6;
 
 static unsigned char key[32];
 static unsigned char iv[16];
@@ -30,11 +33,44 @@ typedef struct {
   ev_io *vports[256];
 } proxy_client;
 
-typedef struct {
-  int size;
-  char type;
-  unsigned char data[PROXY_BUFFER_SIZE - 4 - 1];  
-}  client_request_base;
+
+void fill_minecraft_addr(int af, char *addr, unsigned short int port) {
+  if (af == AF_INET && inet_pton(af, addr, &minecraft_addr4.sin_addr) > 0) {
+    minecraft_addr4.sin_family = AF_INET;
+    minecraft_addr4.sin_port = htons(port);
+	minecraft_addr_size = sizeof(struct sockaddr_in);
+    minecraft_addr = (struct sockaddr*) &minecraft_addr4;
+    return;
+  }
+  if (af == AF_INET6 && inet_pton(af, addr, &minecraft_addr6.sin6_addr) > 0) {
+    minecraft_addr6.sin6_family = AF_INET6;
+    minecraft_addr6.sin6_port = htons(port);
+	minecraft_addr_size = sizeof(struct sockaddr_in6);
+    minecraft_addr = (struct sockaddr*) &minecraft_addr6;
+    return;
+  }
+  perror("FATAL: invalid minecraft addr\n");
+  exit(1);
+}
+
+void fill_proxy_addr(int af, char *addr, unsigned short int port) {
+  if (af == AF_INET && inet_pton(af, addr, &proxy_addr4.sin_addr) > 0) {
+    proxy_addr4.sin_family = AF_INET;
+    proxy_addr4.sin_port = htons(port);
+    proxy_addr_size = sizeof(struct sockaddr_in);
+    proxy_addr = (struct sockaddr*) &proxy_addr4;
+    return;
+  }
+  if (af == AF_INET6 && inet_pton(af, addr, &proxy_addr6.sin6_addr) > 0) {
+    proxy_addr6.sin6_family = AF_INET6;
+    proxy_addr6.sin6_port = htons(port);
+	proxy_addr_size = sizeof(struct sockaddr_in6);
+    proxy_addr = (struct sockaddr*) &proxy_addr6;
+    return;
+  }
+  perror("FATAL: invalid proxy addr\n");
+  exit(1);
+}
 
 int get_packet_id(unsigned char *buf) {
   int id = 0, position = 0, pos = 0;
@@ -60,7 +96,7 @@ int get_packet_id(unsigned char *buf) {
   return id;
 }
 
-static void minecraft_readdr(EV_P_ ev_io *w, int revents){
+static void full_readdr(EV_P_ ev_io *w, int revents){
   static char buf[READER_BUFFER_SIZE];
   ev_io *reciver = w->data;
   static size_t size;
@@ -76,36 +112,10 @@ static void minecraft_readdr(EV_P_ ev_io *w, int revents){
   send(reciver->fd, buf, size, 0);
 }
 
-static void socks_proxy(EV_P_ ev_io *w, int revents) {
-  static client_request_base req;
-  proxy_client *client = w->data;
-
-  size = recv(w->fd, &req, PROXY_BUFFER_SIZE, 0);
-
-  if (size <= 0) {
-    EVP_CIPHER_CTX_cleanup(client->ctx);
-    for (int i = 0; i < 256; i++) {
-      ev_io_stop(loop, client->vports[i]);
-	  free(client->vports[i]);
-    }
-    ev_io_stop(loop, w);
-    free(client);
-	free(w);
-  }    
-  
-  if (req.size > size || req.size <= 0 || req.size > PROXY_BUFFER_SIZE) {
-    return;
-  }
-
-  switch (req.type) {
-  case 0:
-	  
-  }    
-}  
-
 static void minecraft_proxy_client(EV_P_ ev_io *w, int revents) {
-  EVP_CIPHER_CTX *ctx;  
+  EVP_CIPHER_CTX *ctx;
   unsigned char buf[AUTH_BUFFER_SIZE] = {0}, verify_key[16];
+  struct sockaddr_in addr;
   int pos;
   ev_io *reciver = w->data;
   proxy_client *pc;
@@ -128,39 +138,40 @@ static void minecraft_proxy_client(EV_P_ ev_io *w, int revents) {
     ev_io_stop(loop, w);
 
     if (EVP_DecryptUpdate(ctx, verify_key, &pos, &buf[VERIFY_BEGIN], 16) &&
-        memcmp("fuck-RKNfuck-RKN", verify_key, 16) == 0) {
+        memcmp("fuck-RKN", verify_key, 8) == 0) {
       ev_io_stop(loop, reciver);
       close(reciver->fd);
-	  free(reciver);
-      pc = calloc(1, sizeof(proxy_client));
-	  pc->ctx = ctx;
-      w->data = pc;
-      ev_io_init(w, socks_proxy, w->fd, EV_READ);
+      reciver->fd = socket(proxy_addr->sa_family, SOCK_STREAM, 0);
+	  printf("CONNECTED CLIENT!\n");
+      if (connect(reciver->fd, proxy_addr, proxy_addr_size) < 0) {
+        perror("FATAL: cant connect to proxy server\n");
+        exit(1);
+      }      
+      ev_io_init(w, full_readdr, w->fd, EV_READ);
     } else {
-      ev_io_init(w,  minecraft_readdr, w->fd, EV_READ);
-	  EVP_CIPHER_CTX_cleanup(ctx);
-	}          
+      ev_io_init(w,  full_readdr, w->fd, EV_READ);
+    }
     ev_io_start(loop, w);
+    EVP_CIPHER_CTX_cleanup(ctx);    
   }  
 }
 
 static void on_accept(EV_P_ ev_io *w, int revents) {
   struct sockaddr_in client_address;
-  struct sockaddr_in addr;
   int client_fd, minecraft_fd;
+  socklen_t client_len = sizeof(client_address);
+  client_fd = accept(w->fd, (struct sockaddr *)&client_address, &client_len);
 
-  minecraft_fd = socket(AF_INET, SOCK_STREAM, 0);
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(25565);
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  minecraft_fd = socket(minecraft_addr->sa_family, SOCK_STREAM, 0);
+  if (minecraft_fd <= 0) {
+    perror("FATAL: cant create minecraft socket\n");
+	exit(1);
+  }    
 
-  if (connect(minecraft_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+  if (connect(minecraft_fd, minecraft_addr, minecraft_addr_size) < 0) {
     perror("FATAL: cant connect to minecraft server\n");
 	exit(1);
   }    
-  
-  socklen_t client_len = sizeof(client_address);
-  client_fd = accept(w->fd, (struct sockaddr *)&client_address, &client_len);
   
   ev_io *minecraft_watcher_client = malloc(sizeof(ev_io));
   ev_io *minecraft_watcher_server = malloc(sizeof(ev_io));
@@ -170,7 +181,7 @@ static void on_accept(EV_P_ ev_io *w, int revents) {
 
   ev_io_init(minecraft_watcher_client, minecraft_proxy_client, client_fd,
              EV_READ);
-  ev_io_init(minecraft_watcher_server, minecraft_readdr, minecraft_fd,
+  ev_io_init(minecraft_watcher_server, full_readdr, minecraft_fd,
              EV_READ);
   
   ev_io_start(loop, minecraft_watcher_client);
@@ -180,6 +191,10 @@ static void on_accept(EV_P_ ev_io *w, int revents) {
 int run_server(unsigned short int port) {
   int server_fd;
   struct sockaddr_in address;
+
+  fill_minecraft_addr(AF_INET, "127.0.0.1", 25565);
+  fill_proxy_addr(AF_INET, "127.0.0.1", 12345);
+  
   FILE *fp = fopen("key", "rb");
   if (fp == NULL) {
     perror("FATAL: cant load key file\n");
