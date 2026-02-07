@@ -16,6 +16,7 @@
 #define READER_BUFFER_SIZE 2048
 #define AUTH_BUFFER_SIZE 512
 #define VERIFY_BEGIN 12
+#define IV_BEGIN 30
 #define CIPHER EVP_aes_256_cfb8()
 
 static ev_io serv;
@@ -125,7 +126,7 @@ static void minecraft_proxy_client(EV_P_ ev_io *w, int revents) {
   if (get_packet_id(buf) == 1) {
     printf("ENCRYPTION! %ld\n", size);
 	ctx = EVP_CIPHER_CTX_new();
-    EVP_DecryptInit(ctx, CIPHER, key, iv);
+    EVP_DecryptInit(ctx, CIPHER, key, &buf[IV_BEGIN]);
 	EVP_CIPHER_CTX_set_padding(ctx, 0);
     ev_io_stop(loop, w);
 
@@ -184,8 +185,8 @@ int run_server(unsigned short int port) {
   int server_fd;
   struct sockaddr_in address;
 
-  fill_minecraft_addr(AF_INET, "127.0.0.1", 25565);
-  fill_proxy_addr(AF_INET, "127.0.0.1", 12345);
+  fill_minecraft_addr(AF_INET, "127.0.0.1", 25565); // Адрес minecraft сервера
+  fill_proxy_addr(AF_INET, "127.0.0.1", 12345); // Адрес прокси, через которую будет ехать трафик
   
   FILE *fp = fopen("key", "rb");
   if (fp == NULL) {
